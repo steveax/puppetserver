@@ -734,3 +734,72 @@
                                          "params" []}]}]}
                   (response->class-info-map response-after-update))
                "unexpected body for response after update")))))))
+
+(deftest ^:integration class-info-schema-error
+  (let [class-info-atom (atom [{"name" "someclass" "params" [{:name "someparam" :type 5}]}])
+        wait-atom (atom nil)
+        config (bootstrap/load-dev-config-with-overrides
+                 {:jruby-puppet {:gem-path gem-path
+                                 :max-active-instances 1
+                                 :environment-class-cache-enabled true}})
+        mock-jruby-fn (partial create-jruby-instance-with-mock-class-info
+                               wait-atom
+                               class-info-atom)]
+    ;; This test uses a mock jruby instance function which can provide mock
+    ;; data for an environment class info query and can suspend a request
+    ;; long enough for the cached environment data to be invalidated.
+    (tk-bootstrap-testutils/with-app-with-config
+      app
+      (bootstrap/services-from-dev-bootstrap-plus-mock-jruby-pool-manager-service
+        config
+        mock-jruby-fn)
+      config
+      (let [continue-promise (promise)
+            wait-promise (promise)
+            _ (reset! wait-atom {:continue-promise continue-promise
+                                 :wait-promise wait-promise})
+            initial-response-future (future (get-env-classes "production"))]
+        (is (true? (deref wait-promise 10000 :timed-out))
+            (str "timed out waiting for get class info call to be reached "
+                 "in mock jrubypuppet instance"))
+        (reset! class-info-atom [{"name" "updatedclass"
+                                  "params" []}])
+        (purge-env-cache "production")
+        (deliver continue-promise true)
+        (let [initial-response @initial-response-future
+              initial-response-etag (response-etag initial-response)
+              _ (reset! wait-atom nil)
+              response-after-update (get-env-classes "production"
+                                                     initial-response-etag)]
+          (testing (str "initial request in progress while environment "
+                        "cache is invalidated contains original class info")
+            (is (= 200 (:status initial-response))
+                (str
+                  "unexpected status code for initial response"
+                  "response: "
+                  (ks/pprint-to-string initial-response)))
+            (is (not (nil? initial-response-etag))
+                "no etag returned for initial response")
+            (is (= {"name" "production",
+                    "files" [{"path" "/some/file"
+                              "classes" [{"name" "someclass"
+                                          "params" []}]}]}
+                   (response->class-info-map initial-response))
+                "unexpected body for initial response"))
+          (testing (str "SERVER-1130 - class info updated properly for "
+                        "request made after environment cache was purged "
+                        "during a previous class info request")
+            (is (= 200 (:status response-after-update))
+                (str
+                  "unexpected status code for response after update, "
+                  "response: "
+                  (ks/pprint-to-string response-after-update)))
+            (is (not= initial-response-etag
+                      (response-etag response-after-update))
+                "unexpected etag for response after update")
+            (is (= {"name" "production",
+                    "files" [{"path" "/some/file"
+                              "classes" [{"name" "updatedclass"
+                                          "params" []}]}]}
+                   (response->class-info-map response-after-update))
+                "unexpected body for response after update")))))))

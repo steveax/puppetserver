@@ -1321,6 +1321,7 @@
    puppet-version :- schema/Str]
   (-> handler
       authorization-fn
+      ringutils/wrap-log-schema-errors
       (middleware/wrap-uncaught-errors :plain)
       middleware/wrap-request-logging
       i18n/locale-negotiator

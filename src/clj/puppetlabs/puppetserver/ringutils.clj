@@ -2,10 +2,13 @@
   (:import (clojure.lang IFn)
            (java.security.cert X509Certificate))
   (:require [clojure.tools.logging :as log]
+            [puppetlabs.ring-middleware.utils :as middleware-utils]
             [puppetlabs.ssl-utils.core :as ssl-utils]
             [ring.util.response :as ring]
             [schema.core :as schema]
-            [puppetlabs.i18n.core :as i18n]))
+            [puppetlabs.i18n.core :as i18n]
+            [puppetlabs.kitchensink.core :as ks]
+            [slingshot.slingshot :refer [try+]]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Schema
@@ -92,6 +95,33 @@
       ; In that case, don't add the header.
       (when response
         (ring/header response "X-Puppet-Version" version)))))
+
+(defn wrap-log-schema-errors
+  "Function that returns a middleware that will log any schema errors"
+  [handler]
+  (fn [request]
+    (println "in schema error handler")
+    (clojure.pprint/pprint handler)
+    (try+ (handler request)
+          (println "in try")
+          (catch Exception e
+            ;; re-throw things that are not schema errors
+            (println "in catch")
+            (when-not (middleware-utils/schema-error? e)
+              (throw e))
+            (let [{:keys [schema value error]} (.getData e)]
+              (println "zgqt")
+              (clojure.pprint/pprint schema)
+              (clojure.pprint/pprint value)
+              (clojure.pprint/pprint error)
+              (log/error (str (i18n/trs "Schema Error:")
+                              "\n"
+                              (ks/pprint-to-string schema)
+                              "\n"
+                              (ks/pprint-to-string value)
+                              "\n"
+                              (ks/pprint-to-string error)))
+              (handler request))))))
 
 ;; This function exists to support backward-compatible usage of a
 ;; client-whitelist to protect access to some Clojure endpoints.  When support
